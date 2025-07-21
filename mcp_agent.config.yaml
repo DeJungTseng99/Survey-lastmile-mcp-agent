@@ -1,0 +1,18 @@
+execution_engine: asyncio
+
+logger:
+  type: console
+  level: info
+
+mcp:
+  servers:
+    opensearch:
+      transport: streamable_http
+      url: "http://localhost:9900/mcp"
+      headers:
+        Accept: "application/json, text/event-stream"
+        Content-Type: "application/json"
+      description: "OpenSearch MCP Server"
+
+google:
+  default_model: "gemini-2.0-flash"
