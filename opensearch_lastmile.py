@@ -43,12 +43,8 @@ settings = Settings(
     ),
 )
 
-# Settings can either be specified programmatically,
-# or loaded from mcp_agent.config.yaml/mcp_agent.secrets.yaml
-app = MCPApp(
-    name="opensearch_agent",
-    settings=settings  # 啟用程式化設定
-)
+# 使用配置檔案而不是程式化設定，這樣才能讀取secrets
+app = MCPApp(name="opensearch_agent")
 
 
 async def test_connection():
