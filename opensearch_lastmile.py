@@ -16,10 +16,10 @@ from mcp_agent.workflows.llm.augmented_llm_google import GoogleAugmentedLLM
 
 
 class SearchResult(BaseModel):
-    query: str
-    total_hits: int
-    results: list
-    summary: str
+    query: str = "未知查詢"
+    total_hits: int = 0
+    results: list = []
+    summary: str = "無法生成摘要"
 
 
 settings = Settings(
@@ -112,7 +112,65 @@ async def example_usage():
             2. Execute the search using available tools (使用可用工具執行搜尋)
             3. Generate proper JSON-RPC 2.0 tool calls to the OpenSearch server (生成正確的JSON-RPC 2.0工具呼叫)
             4. Format and summarize the search results for the user (為使用者格式化和總結搜尋結果)
-            5. Ask for clarification if the search query is ambiguous (如果搜尋查詢不明確請要求澄清)""",
+            5. Ask for clarification if the search query is ambiguous (如果搜尋查詢不明確請要求澄清)
+            
+            OpenSearch DSL Query Examples (OpenSearch DSL 查詢範例):
+            
+            1. Basic term query (基本詞彙查詢):
+            {
+              "query": {
+                "term": {
+                  "event_type": "agent_stop"
+                }
+              }
+            }
+            
+            2. Multi-index search with specific event (多索引特定事件搜尋):
+            {
+              "query": {
+                "bool": {
+                  "must": [
+                    {"term": {"event_type": "agent_stop"}}
+                  ]
+                }
+              },
+              "sort": [{"timestamp": {"order": "desc"}}],
+              "size": 10
+            }
+            
+            3. Range query with time filter (時間範圍查詢):
+            {
+              "query": {
+                "bool": {
+                  "must": [
+                    {"term": {"event_type": "agent_stop"}},
+                    {"range": {"timestamp": {"gte": "now-24h", "lte": "now"}}}
+                  ]
+                }
+              }
+            }
+            
+            4. Match query for text search (文字搜尋查詢):
+            {
+              "query": {
+                "match": {
+                  "message": "error occurred"
+                }
+              }
+            }
+            
+            Always use proper DSL syntax like the examples above when constructing queries.
+            總是使用上述範例中的正確 DSL 語法來構建查詢。
+            
+            Time Range Guidelines (時間範圍指南):
+            - For "past 24 hours" or "last day": use "now-24h" to "now"
+            - For "past week": use "now-7d" to "now"  
+            - For "past month": use "now-30d" to "now"
+            - For "today": use "now/d" to "now"
+            - For "yesterday": use "now-1d/d" to "now-1d/d+1d"
+            
+            當用戶要求查詢特定時間範圍時，直接使用 OpenSearch 的相對時間語法，
+            不需要詢問當前時間。使用 "now" 相對時間表達式。""",
             server_names=["opensearch"],
         )
 
@@ -152,16 +210,27 @@ async def example_usage():
                     if result and len(result.strip()) > 0:
                         try:
                             structured_result = await llm.generate_structured(
-                                message="Create a structured summary of the previous search results, including the query, total hits found, and a brief summary.",
+                                message=f"""基於以下搜尋結果創建結構化摘要：
+                                查詢: {user_query}
+                                搜尋結果: {result}
+
+                                請創建一個包含以下資訊的 JSON 結構：
+                                - query: 原始查詢語句
+                                - total_hits: 找到的記錄總數 (如果無法確定請設為 0)
+                                - results: 搜尋結果摘要清單 (可為空陣列)
+                                - summary: 簡短的中文摘要說明
+                                """,
                                 response_model=SearchResult,
                             )
                             print(f"\n📋 結構化摘要:")
-                            print(f"   查詢: {structured_result.query}")
-                            print(f"   總命中數: {structured_result.total_hits}")
-                            print(f"   摘要: {structured_result.summary}")
+                            print(f"   查詢: {getattr(structured_result, 'query', '未知查詢')}")
+                            print(f"   總命中數: {getattr(structured_result, 'total_hits', 0)}")
+                            print(f"   摘要: {getattr(structured_result, 'summary', '無法生成摘要')}")
                             logger.info(f"Structured search result: {structured_result}")
                         except Exception as e:
-                            print(f"⚠️ 結構化摘要生成失敗: {e}")
+                            error_msg = str(e) if hasattr(e, '__str__') else type(e).__name__
+                            print(f"⚠️ 結構化摘要生成失敗: {error_msg}")
+                            logger.error(f"Structured summary generation failed: {error_msg}", exc_info=True)
                     else:
                         print("⚠️ 沒有獲得搜尋結果，跳過結構化摘要")
                     
