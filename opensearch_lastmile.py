@@ -105,13 +105,14 @@ async def example_usage():
 
         opensearch_agent = Agent(
             name="opensearch_searcher",
-            instruction="""You are an OpenSearch query agent with access to search capabilities. 
-            Your job is to:
-            1. Understand user search requests and translate them into appropriate OpenSearch queries
-            2. Execute the search using available tools 
-            3. Generate proper JSON-RPC 2.0 tool calls to the OpenSearch server
-            4. Format and summarize the search results for the user
-            5. Ask for clarification if the search query is ambiguous""",
+            instruction="""You are an OpenSearch query agent with access to search capabilities. Please respond in Traditional Chinese (繁體中文).
+            你是一個OpenSearch查詢助手，具有搜尋功能。請用繁體中文回應。
+            Your job is to (你的工作是):
+            1. Understand user search requests and translate them into appropriate OpenSearch queries (理解使用者的搜尋請求並轉換為適當的OpenSearch查詢)
+            2. Execute the search using available tools (使用可用工具執行搜尋)
+            3. Generate proper JSON-RPC 2.0 tool calls to the OpenSearch server (生成正確的JSON-RPC 2.0工具呼叫)
+            4. Format and summarize the search results for the user (為使用者格式化和總結搜尋結果)
+            5. Ask for clarification if the search query is ambiguous (如果搜尋查詢不明確請要求澄清)""",
             server_names=["opensearch"],
         )
 
