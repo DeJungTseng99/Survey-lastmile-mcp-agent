@@ -1,9 +1,12 @@
 import asyncio
 import time
+import re
+from typing import List, Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mcp_agent.app import MCPApp
+from time_parser import TimeParser, create_time_aware_prompt
 from mcp_agent.config import (
     GoogleSettings,
     Settings,
@@ -16,10 +19,11 @@ from mcp_agent.workflows.llm.augmented_llm_google import GoogleAugmentedLLM
 
 
 class SearchResult(BaseModel):
-    query: str = "未知查詢"
-    total_hits: int = 0
-    results: list = []
-    summary: str = "無法生成摘要"
+    """OpenSearch搜尋結果的結構化表示"""
+    query: str = Field(default="未知查詢", description="原始查詢語句")
+    total_hits: int = Field(default=0, description="找到的記錄總數")
+    results: List[str] = Field(default=[], description="搜尋結果摘要清單")
+    summary: str = Field(default="無法生成摘要", description="簡短的中文摘要說明")
 
 
 settings = Settings(
@@ -180,10 +184,14 @@ async def example_usage():
             logger.info("Tools available:", data=result.model_dump())
 
             llm = await opensearch_agent.attach_llm(GoogleAugmentedLLM)
+            time_parser = TimeParser()
 
             # Interactive search loop
             print("\n=== OpenSearch Agent 已啟動 ===")
             print("請輸入您的搜尋查詢，輸入 'quit' 退出")
+            print("💡 時間查詢提示:")
+            print("   • 相對時間: '過去24小時', '過去7天', '昨天', '上週'")
+            print("   • 絕對時間: 輸入開始和結束時間，如 '2025-07-01 到 2025-07-10'")
             
             while True:
                 try:
@@ -199,37 +207,95 @@ async def example_usage():
                     
                     print(f"\n⏳ 正在執行搜尋: {user_query}")
                     
+                    # 檢查是否為絕對時間區間查詢
+                    if '到' in user_query or ' to ' in user_query.lower():
+                        # 處理絕對時間區間
+                        parts = re.split(r'到|to', user_query, flags=re.IGNORECASE)
+                        if len(parts) == 2:
+                            start_time = parts[0].strip()
+                            end_time = parts[1].strip()
+                            
+                            # 嘗試解析絕對時間
+                            time_range = time_parser.parse_absolute_time(start_time, end_time)
+                            if time_range:
+                                print(f"⏰ 檢測到時間區間: {time_range['description']}")
+                                enhanced_query = f"""執行 OpenSearch 查詢，包含時間範圍限制：
+                                原始查詢: {user_query}
+                                時間範圍: {{'range': {{'@timestamp': {{'gte': '{time_range['gte']}', 'lte': '{time_range['lte']}'}}}}}}
+                                
+                                請構建包含此時間範圍的 OpenSearch DSL 查詢。"""
+                            else:
+                                print("⚠️ 時間格式無法解析，將使用原始查詢")
+                                enhanced_query = f"Execute search query in OpenSearch: {user_query}"
+                        else:
+                            enhanced_query = f"Execute search query in OpenSearch: {user_query}"
+                    else:
+                        # 使用時間解析器分析查詢
+                        time_aware_prompt = create_time_aware_prompt(user_query, time_parser)
+                        enhanced_query = f"Execute search query in OpenSearch: {time_aware_prompt}"
+                    
                     # Execute search query
-                    result = await llm.generate_str(
-                        message=f"Execute search query in OpenSearch: {user_query}",
-                    )
+                    result = await llm.generate_str(message=enhanced_query)
                     logger.info(f"Search result for '{user_query}': {result}")
                     print(f"\n📊 搜尋結果:\n{result}")
                     
                     # Generate structured summary only if we got results
                     if result and len(result.strip()) > 0:
                         try:
-                            structured_result = await llm.generate_structured(
-                                message=f"""基於以下搜尋結果創建結構化摘要：
-                                查詢: {user_query}
-                                搜尋結果: {result}
+                            # Debug: 檢查傳入LLM的參數
+                            structured_message = f"""分析以下OpenSearch搜尋結果並提取關鍵信息：
 
-                                請創建一個包含以下資訊的 JSON 結構：
-                                - query: 原始查詢語句
-                                - total_hits: 找到的記錄總數 (如果無法確定請設為 0)
-                                - results: 搜尋結果摘要清單 (可為空陣列)
-                                - summary: 簡短的中文摘要說明
-                                """,
+                            查詢: {user_query}
+                            搜尋結果: {result}
+
+                            請從搜尋結果中提取：
+                            1. 總記錄數量（查找數字如10000、>10000等）
+                            2. 主要搜尋結果摘要
+                            3. 簡短中文說明
+
+                            如果看到"超過10000筆"、"10000+"等描述，total_hits請設為實際數字而非0。
+                            不須調用MCP工具，只需生成結構化摘要。"""
+                            
+                            print(f"\n🔍 Debug - 傳入LLM的message長度: {len(structured_message)}")
+                            print(f"🔍 Debug - response_model類型: {SearchResult}")
+                            print(f"🔍 Debug - 原始搜尋結果長度: {len(result)}")
+                            
+                            structured_result = await llm.generate_structured(
+                                message=structured_message,
                                 response_model=SearchResult,
                             )
-                            print(f"\n📋 結構化摘要:")
-                            print(f"   查詢: {getattr(structured_result, 'query', '未知查詢')}")
-                            print(f"   總命中數: {getattr(structured_result, 'total_hits', 0)}")
-                            print(f"   摘要: {getattr(structured_result, 'summary', '無法生成摘要')}")
+                            
+                            # Debug: 檢查返回的結果
+                            print(f"\n🔍 Debug - structured_result類型: {type(structured_result)}")
+                            print(f"🔍 Debug - structured_result是否為None: {structured_result is None}")
+                            
+                            # 檢查是否為ValidationError
+                            if hasattr(structured_result, 'errors'):
+                                print(f"❌ 檢測到ValidationError: {structured_result}")
+                                print(f"🔍 Debug - ValidationError詳細信息: {structured_result.errors()}")
+                                raise structured_result
+                            elif structured_result and isinstance(structured_result, SearchResult):
+                                print(f"🔍 Debug - structured_result內容: {structured_result}")
+                                print(f"🔍 Debug - query屬性: {hasattr(structured_result, 'query')}")
+                                print(f"🔍 Debug - total_hits屬性: {hasattr(structured_result, 'total_hits')}")
+                                
+                                print(f"\n📋 結構化摘要:")
+                                print(f"   查詢: {getattr(structured_result, 'query', '未知查詢')}")  
+                                print(f"   總命中數: {getattr(structured_result, 'total_hits', 0)}")
+                                print(f"   摘要: {getattr(structured_result, 'summary', '無法生成摘要')}")
+                            else:
+                                print(f"⚠️ structured_result類型不正確或為None: {type(structured_result)}")
+                                print(f"🔍 Debug - 內容: {structured_result}")
+                                
                             logger.info(f"Structured search result: {structured_result}")
                         except Exception as e:
                             error_msg = str(e) if hasattr(e, '__str__') else type(e).__name__
                             print(f"⚠️ 結構化摘要生成失敗: {error_msg}")
+                            
+                            # 特別處理ValidationError
+                            if hasattr(e, 'errors'):
+                                print(f"🔍 Debug - ValidationError詳細信息: {e.errors()}")
+                            
                             logger.error(f"Structured summary generation failed: {error_msg}", exc_info=True)
                     else:
                         print("⚠️ 沒有獲得搜尋結果，跳過結構化摘要")
