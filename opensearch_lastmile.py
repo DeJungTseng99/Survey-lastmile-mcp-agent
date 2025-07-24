@@ -18,12 +18,19 @@ from mcp_agent.agents.agent import Agent
 from mcp_agent.workflows.llm.augmented_llm_google import GoogleAugmentedLLM
 
 
-class SearchResult(BaseModel):
-    """OpenSearch搜尋結果的結構化表示"""
+class SecurityEventReport(BaseModel):
+    """資安事件分析報告"""
     query: str = Field(default="未知查詢", description="原始查詢語句")
     total_hits: int = Field(default=0, description="找到的記錄總數")
-    results: List[str] = Field(default=[], description="搜尋結果摘要清單")
-    summary: str = Field(default="無法生成摘要", description="簡短的中文摘要說明")
+    event_time: str = Field(default="未知時間", description="事件發生時間 (YYYY-MM-DD HH:mm:ss)")
+    event_type: str = Field(default="未知事件", description="事件類型，如：登入失敗、檔案刪除、異常流量")
+    severity: str = Field(default="中", description="嚴重性：低/中/高")
+    username: str = Field(default="未知使用者", description="發生事件的帳號")
+    hostname: str = Field(default="未知主機", description="發生事件的設備名稱")
+    host_ip: str = Field(default="未知IP", description="發生事件的 IP")
+    description: str = Field(default="無描述", description="事件詳細描述")
+    recommended_actions: List[str] = Field(default=[], description="建議採取的行動")
+    log_samples: List[str] = Field(default=[], description="2-3條具代表性的日誌內容")
 
 
 settings = Settings(
@@ -187,11 +194,15 @@ async def example_usage():
             time_parser = TimeParser()
 
             # Interactive search loop
-            print("\n=== OpenSearch Agent 已啟動 ===")
-            print("請輸入您的搜尋查詢，輸入 'quit' 退出")
-            print("💡 時間查詢提示:")
-            print("   • 相對時間: '過去24小時', '過去7天', '昨天', '上週'")
-            print("   • 絕對時間: 輸入開始和結束時間，如 '2025-07-01 到 2025-07-10'")
+            print("\n=== OpenSearch 資安事件分析系統 已啟動 ===")
+            print("🔍 請輸入您的搜尋查詢，輸入 'quit' 退出")
+            print("📋 系統會自動生成詳細的資安事件分析報告")
+            print("\n💡 查詢建議:")
+            print("   • 事件查詢: 'authentication 過去24小時', '登入失敗 過去7天'")
+            print("   • 時間範圍: '過去24小時', '昨天', '2025-07-01 到 2025-07-10'")
+            print("   • 特定事件: 'event.category:authentication', 'failed login'")
+            print("   • 使用者查詢: 'username:eagle_tseng 過去1週'")
+            print("-" * 55)
             
             while True:
                 try:
@@ -223,46 +234,92 @@ async def example_usage():
                                 原始查詢: {user_query}
                                 時間範圍: {{'range': {{'@timestamp': {{'gte': '{time_range['gte']}', 'lte': '{time_range['lte']}'}}}}}}
                                 
-                                請構建包含此時間範圍的 OpenSearch DSL 查詢。"""
+                                重要：請實際使用opensearch_search_logs_advanced工具來執行此DSL查詢，不要只回應查詢語法。"""
                             else:
                                 print("⚠️ 時間格式無法解析，將使用原始查詢")
-                                enhanced_query = f"Execute search query in OpenSearch: {user_query}"
+                                enhanced_query = f"""Execute search query in OpenSearch using available MCP tools: {user_query}
+
+                                    重要：請實際使用以下其中一個OpenSearch MCP工具來執行搜尋：
+                                    1. opensearch_search_logs_by_keyword - 用於關鍵字搜尋  
+                                    2. opensearch_search_logs_advanced - 用於複雜的DSL查詢
+                                    3. opensearch_list_log_indices - 列出可用的索引
+
+                                    不要只回應查詢語法，請實際調用工具並返回搜尋結果。"""
                         else:
                             enhanced_query = f"Execute search query in OpenSearch: {user_query}"
                     else:
                         # 使用時間解析器分析查詢
                         time_aware_prompt = create_time_aware_prompt(user_query, time_parser)
-                        enhanced_query = f"Execute search query in OpenSearch: {time_aware_prompt}"
+                        enhanced_query = f"""Execute search query in OpenSearch using available MCP tools: {time_aware_prompt}
+
+                            **必須執行的操作：**
+                            針對查詢 "{user_query}"，請使用opensearch_search_logs_advanced工具，參數設定：
+                            - index_pattern: "agent-inventory-log-000001" 
+                            - query: 包含event.category為authentication且時間範圍為過去15天的DSL查詢
+                            - size: 20
+
+                            請立即調用工具並返回實際的搜尋結果，不要只提供查詢語法。"""
                     
                     # Execute search query
                     result = await llm.generate_str(message=enhanced_query)
                     logger.info(f"Search result for '{user_query}': {result}")
                     print(f"\n📊 搜尋結果:\n{result}")
                     
+                    # 檢查是否為無效的搜尋結果（只有查詢語法而沒有實際數據）
+                    # 更精確的檢測：只有當結果包含工具調用語法但沒有實際數據時才警告
+                    has_tool_syntax = any(keyword in result.lower() for keyword in [
+                        'tool_code', 'tool_name', 'tool_input', '```json', '好的，我將使用'
+                    ])
+                    
+                    has_actual_data = any(indicator in result.lower() for indicator in [
+                        'hits', 'total', '_source', 'timestamp', '_id', 'found', 'documents', 'records'
+                    ])
+                    
+                    is_query_only = has_tool_syntax and not has_actual_data
+                    
+                    if is_query_only:
+                        print("⚠️ 檢測到查詢語法但無實際搜尋結果，可能是OpenSearch服務器未連接")
+                        print("💡 建議：請確認OpenSearch MCP服務器是否正在運行")
+                    
                     # Generate structured summary only if we got results
                     if result and len(result.strip()) > 0:
                         try:
                             # Debug: 檢查傳入LLM的參數
-                            structured_message = f"""分析以下OpenSearch搜尋結果並提取關鍵信息：
+                            structured_message = f"""【重要】請嚴格基於實際的OpenSearch搜尋結果進行分析，不要編造任何資料：
 
                             查詢: {user_query}
                             搜尋結果: {result}
 
-                            請從搜尋結果中提取：
-                            1. 總記錄數量（查找數字如10000、>10000等）
-                            2. 主要搜尋結果摘要
-                            3. 簡短中文說明
+                            **分析規則：**
+                            1. 如果搜尋結果只是查詢語法而無實際數據，請將所有欄位設為"查詢未執行"或"無資料"
+                            2. 只有在搜尋結果包含實際日誌記錄時，才提取真實數據
+                            3. 如果看到tool_code或JSON查詢語法，表示查詢尚未執行成功
+                            4. 時間必須使用2025年的日期，不要使用過時的2024年數據
 
-                            如果看到"超過10000筆"、"10000+"等描述，total_hits請設為實際數字而非0。
-                            不須調用MCP工具，只需生成結構化摘要。"""
-                            
+                            **提取欄位：**
+                            - total_hits: 實際記錄總數（如果未執行查詢則為0）
+                            - event_time: 實際事件時間，必須是2025年格式
+                            - event_type: 從實際日誌中提取的事件類型
+                            - severity: 基於實際影響評估（無資料時為"未知"）
+                            - username: 從實際日誌提取的使用者名稱
+                            - hostname: 從實際日誌提取的主機名稱  
+                            - host_ip: 從實際日誌提取的IP地址
+                            - description: 基於實際搜尋結果的描述（如果是查詢語法則說明"查詢未執行"）
+                            - recommended_actions: 只有在有實際資料時才提供建議
+                            - log_samples: 只包含實際的日誌內容，不要編造示例
+
+                            **禁止行為：**
+                            - 不要編造任何虛假的日誌記錄
+                            - 不要使用2024年或更早的日期
+                            - 不要在沒有實際數據時提供具體的使用者名稱或IP地址"""
+                                                        
                             print(f"\n🔍 Debug - 傳入LLM的message長度: {len(structured_message)}")
-                            print(f"🔍 Debug - response_model類型: {SearchResult}")
+                            print(f"🔍 Debug - response_model類型: {SecurityEventReport}")
                             print(f"🔍 Debug - 原始搜尋結果長度: {len(result)}")
                             
                             structured_result = await llm.generate_structured(
                                 message=structured_message,
-                                response_model=SearchResult,
+                                response_model=SecurityEventReport,
                             )
                             
                             # Debug: 檢查返回的結果
@@ -274,15 +331,54 @@ async def example_usage():
                                 print(f"❌ 檢測到ValidationError: {structured_result}")
                                 print(f"🔍 Debug - ValidationError詳細信息: {structured_result.errors()}")
                                 raise structured_result
-                            elif structured_result and isinstance(structured_result, SearchResult):
+                            elif structured_result and isinstance(structured_result, SecurityEventReport):
                                 print(f"🔍 Debug - structured_result內容: {structured_result}")
                                 print(f"🔍 Debug - query屬性: {hasattr(structured_result, 'query')}")
                                 print(f"🔍 Debug - total_hits屬性: {hasattr(structured_result, 'total_hits')}")
                                 
-                                print(f"\n📋 結構化摘要:")
-                                print(f"   查詢: {getattr(structured_result, 'query', '未知查詢')}")  
-                                print(f"   總命中數: {getattr(structured_result, 'total_hits', 0)}")
-                                print(f"   摘要: {getattr(structured_result, 'summary', '無法生成摘要')}")
+                                # 顯示資安事件分析報告
+                                print(f"\n🔍 資安事件分析報告")
+                                print(f"-" * 49)
+                                
+                                # 檢查是否為查詢未執行的情況
+                                description = getattr(structured_result, 'description', '無描述')
+                                total_hits = getattr(structured_result, 'total_hits', 0)
+                                
+                                if total_hits == 0 and any(keyword in description for keyword in ['查詢未執行', '無資料', '無實際數據']):
+                                    print(f"⚠️ 狀態：查詢未成功執行")
+                                    print(f"📋 查詢：{getattr(structured_result, 'query', user_query)}")
+                                    print(f"\n📄 說明：")
+                                    print(f"{description}")
+                                    print(f"\n💡 可能原因：")
+                                    print(f"- OpenSearch MCP服務器未啟動")
+                                    print(f"- 網路連接問題")
+                                    print(f"- 索引名稱或查詢語法錯誤")
+                                else:
+                                    print(f"🕒 時間：{getattr(structured_result, 'event_time', '未知時間')}")
+                                    print(f"📌 事件類型：{getattr(structured_result, 'event_type', '未知事件')}")
+                                    print(f"⚠️ 嚴重性：{getattr(structured_result, 'severity', '中')}")
+                                    print(f"👤 使用者：{getattr(structured_result, 'username', '未知使用者')}")
+                                    print(f"💻 主機名稱：{getattr(structured_result, 'hostname', '未知主機')}")
+                                    print(f"🌐 主機 IP：{getattr(structured_result, 'host_ip', '未知IP')}")
+                                    print(f"\n📄 描述：")
+                                    print(f"{description}")
+                                    
+                                    # 建議行動
+                                    actions = getattr(structured_result, 'recommended_actions', [])
+                                    if actions and actions != ['查詢未執行'] and actions != ['無資料']:
+                                        print(f"\n✅ 建議行動：")
+                                        for action in actions:
+                                            print(f"- {action}")
+                                    
+                                    # 相關日誌摘要
+                                    log_samples = getattr(structured_result, 'log_samples', [])
+                                    if log_samples and log_samples != ['查詢未執行'] and log_samples != ['無資料']:
+                                        print(f"\n📑 相關日誌摘要：")
+                                        for log in log_samples:
+                                            print(f"- {log}")
+                                
+                                print(f"-" * 49)
+                                print(f"📊 總計：{total_hits} 筆記錄")
                             else:
                                 print(f"⚠️ structured_result類型不正確或為None: {type(structured_result)}")
                                 print(f"🔍 Debug - 內容: {structured_result}")
