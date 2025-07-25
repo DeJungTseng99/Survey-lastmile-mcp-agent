@@ -125,50 +125,14 @@ async def example_usage():
             4. Format and summarize the search results for the user (為使用者格式化和總結搜尋結果)
             5. Ask for clarification if the search query is ambiguous (如果搜尋查詢不明確請要求澄清)
             
-            OpenSearch DSL Query Examples (OpenSearch DSL 查詢範例):
+            OpenSearch DSL Query Guidelines (OpenSearch DSL 查詢指南):
             
-            1. Basic term query (基本詞彙查詢):
-            {
-              "query": {
-                "term": {
-                  "event_type": "agent_stop"
-                }
-              }
-            }
-            
-            2. Multi-index search with specific event (多索引特定事件搜尋):
-            {
-              "query": {
-                "bool": {
-                  "must": [
-                    {"term": {"event_type": "agent_stop"}}
-                  ]
-                }
-              },
-              "sort": [{"timestamp": {"order": "desc"}}],
-              "size": 10
-            }
-            
-            3. Range query with time filter (時間範圍查詢):
-            {
-              "query": {
-                "bool": {
-                  "must": [
-                    {"term": {"event_type": "agent_stop"}},
-                    {"range": {"timestamp": {"gte": "now-24h", "lte": "now"}}}
-                  ]
-                }
-              }
-            }
-            
-            4. Match query for text search (文字搜尋查詢):
-            {
-              "query": {
-                "match": {
-                  "message": "error occurred"
-                }
-              }
-            }
+            1. Use term queries for exact matches (精確匹配使用 term 查詢)
+            2. Use match queries for text search (文字搜尋使用 match 查詢) 
+            3. Use bool queries to combine conditions (使用 bool 查詢組合條件)
+            4. Use range queries for time/numeric filters (時間/數值範圍使用 range 查詢)
+            5. Support multi-index searches with flexible patterns (支援彈性模式的多索引搜尋)
+            6. Automatically determine appropriate field names and values (自動判斷適當的欄位名稱和值)
             
             Always use proper DSL syntax like the examples above when constructing queries.
             總是使用上述範例中的正確 DSL 語法來構建查詢。
@@ -252,13 +216,16 @@ async def example_usage():
                         time_aware_prompt = create_time_aware_prompt(user_query, time_parser)
                         enhanced_query = f"""Execute search query in OpenSearch using available MCP tools: {time_aware_prompt}
 
-                            **必須執行的操作：**
-                            針對查詢 "{user_query}"，請使用opensearch_search_logs_advanced工具，參數設定：
-                            - index_pattern: "agent-inventory-log-000001" 
-                            - query: 包含event.category為authentication且時間範圍為過去15天的DSL查詢
-                            - size: 20
+                            **執行搜尋查詢：**
+                            使用者查詢: "{user_query}"
+                            
+                            請使用 opensearch_search_logs_advanced 工具執行搜尋：
+                            - 自動判斷合適的索引模式（可搜尋多個索引）
+                            - 根據使用者查詢內容構建適當的 DSL 查詢
+                            - 支援搜尋任何欄位和值
+                            - 請直接執行搜尋並返回實際結果，不要只提供查詢語法
 
-                            請立即調用工具並返回實際的搜尋結果，不要只提供查詢語法。"""
+                            請立即調用工具並返回實際的搜尋結果。"""
                     
                     # Execute search query
                     result = await llm.generate_str(message=enhanced_query)
@@ -285,33 +252,29 @@ async def example_usage():
                     if result and len(result.strip()) > 0:
                         try:
                             # Debug: 檢查傳入LLM的參數
-                            structured_message = f"""【重要】請嚴格基於實際的OpenSearch搜尋結果進行分析，不要編造任何資料：
+                            structured_message = f"""【重要】這是資料分析階段，請嚴格基於已有的搜尋結果進行分析，絕對不要再次執行任何工具或搜尋：
 
-                            查詢: {user_query}
-                            搜尋結果: {result}
+                            原始查詢: {user_query}
+                            已完成的搜尋結果: {result}
 
-                            **分析規則：**
-                            1. 如果搜尋結果只是查詢語法而無實際數據，請將所有欄位設為"查詢未執行"或"無資料"
-                            2. 只有在搜尋結果包含實際日誌記錄時，才提取真實數據
-                            3. 如果看到tool_code或JSON查詢語法，表示查詢尚未執行成功
-                            4. 時間必須使用2025年的日期，不要使用過時的2024年數據
+                            **您的任務：僅進行資料分析，不執行任何工具**
+                            請基於上述搜尋結果提取以下資訊：
+                            - total_hits: 從結果中提取的實際記錄總數
+                            - event_time: 從日誌中提取的事件時間
+                            - event_type: 從日誌中提取的事件類型
+                            - severity: 基於事件內容評估嚴重性
+                            - username: 從日誌中提取的使用者名稱（如無則為"無資料"）
+                            - hostname: 從日誌中提取的主機名稱
+                            - host_ip: 從日誌中提取的IP地址（如無則為"無資料"）
+                            - description: 基於搜尋結果的簡要描述
+                            - recommended_actions: 基於分析結果的建議行動
+                            - log_samples: 從搜尋結果中提取的代表性日誌內容
 
-                            **提取欄位：**
-                            - total_hits: 實際記錄總數（如果未執行查詢則為0）
-                            - event_time: 實際事件時間，必須是2025年格式
-                            - event_type: 從實際日誌中提取的事件類型
-                            - severity: 基於實際影響評估（無資料時為"未知"）
-                            - username: 從實際日誌提取的使用者名稱
-                            - hostname: 從實際日誌提取的主機名稱  
-                            - host_ip: 從實際日誌提取的IP地址
-                            - description: 基於實際搜尋結果的描述（如果是查詢語法則說明"查詢未執行"）
-                            - recommended_actions: 只有在有實際資料時才提供建議
-                            - log_samples: 只包含實際的日誌內容，不要編造示例
-
-                            **禁止行為：**
-                            - 不要編造任何虛假的日誌記錄
-                            - 不要使用2024年或更早的日期
-                            - 不要在沒有實際數據時提供具體的使用者名稱或IP地址"""
+                            **嚴格禁止：**
+                            - 不要執行任何 OpenSearch 工具
+                            - 不要重新搜尋任何資料
+                            - 不要編造任何資料
+                            - 只能分析已提供的搜尋結果"""
                                                         
                             print(f"\n🔍 Debug - 傳入LLM的message長度: {len(structured_message)}")
                             print(f"🔍 Debug - response_model類型: {SecurityEventReport}")
