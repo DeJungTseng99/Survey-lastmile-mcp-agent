@@ -33,6 +33,36 @@ class SecurityEventReport(BaseModel):
     log_samples: List[str] = Field(default=[], description="2-3條具代表性的日誌內容")
 
 
+def get_security_status_indicator(severity: str, total_hits: int) -> str:
+    """根據嚴重程度和記錄數量返回安全狀態指示器"""
+    severity_lower = severity.lower()
+    
+    if severity_lower == "高" or total_hits > 100:
+        return "🔴 高風險警示"
+    elif severity_lower == "中" or total_hits > 10:
+        return "🟡 中度警示"
+    elif severity_lower == "低" or total_hits > 0:
+        return "🟠 低度警示"
+    else:
+        return "✅ 安全狀態"
+
+
+def format_log_sample(log_sample: str, max_lines: int = 10) -> str:
+    """格式化日誌樣本，限制顯示行數"""
+    try:
+        import json
+        # 嘗試格式化 JSON
+        parsed = json.loads(log_sample)
+        formatted = json.dumps(parsed, indent=2, ensure_ascii=False)
+        lines = formatted.split('\n')
+        if len(lines) > max_lines:
+            return '\n'.join(lines[:max_lines]) + '\n  ...(已截斷)'
+        return formatted
+    except:
+        # 如果不是 JSON，直接返回
+        return log_sample
+
+
 settings = Settings(
     execution_engine="asyncio",
     logger=LoggerSettings(type="console", level="debug"),
@@ -299,49 +329,54 @@ async def example_usage():
                                 print(f"🔍 Debug - query屬性: {hasattr(structured_result, 'query')}")
                                 print(f"🔍 Debug - total_hits屬性: {hasattr(structured_result, 'total_hits')}")
                                 
-                                # 顯示資安事件分析報告
-                                print(f"\n🔍 資安事件分析報告")
-                                print(f"-" * 49)
-                                
-                                # 檢查是否為查詢未執行的情況
+                                # 顯示新格式的資安事件分析報告
                                 description = getattr(structured_result, 'description', '無描述')
                                 total_hits = getattr(structured_result, 'total_hits', 0)
+                                severity = getattr(structured_result, 'severity', '中')
                                 
+                                # 獲取安全狀態指示器
+                                status_indicator = get_security_status_indicator(severity, total_hits)
+                                
+                                # 檢查是否為查詢未執行的情況
                                 if total_hits == 0 and any(keyword in description for keyword in ['查詢未執行', '無資料', '無實際數據']):
-                                    print(f"⚠️ 狀態：查詢未成功執行")
-                                    print(f"📋 查詢：{getattr(structured_result, 'query', user_query)}")
-                                    print(f"\n📄 說明：")
-                                    print(f"{description}")
-                                    print(f"\n💡 可能原因：")
-                                    print(f"- OpenSearch MCP服務器未啟動")
-                                    print(f"- 網路連接問題")
-                                    print(f"- 索引名稱或查詢語法錯誤")
+                                    print(f"\n[ ⚠️ 查詢失敗 ]")
+                                    print(f"📄 摘要：查詢未成功執行")
+                                    print(f"📋 原因：{description}")
+                                    print(f"\n💡 建議檢查：")
+                                    print(f"• OpenSearch MCP服務器是否啟動")
+                                    print(f"• 網路連接是否正常")
+                                    print(f"• 索引名稱或查詢語法是否正確")
                                 else:
+                                    # 正常的安全報告格式
+                                    print(f"\n[ {status_indicator} ]")
+                                    print(f"📄 摘要：{description}")
                                     print(f"🕒 時間：{getattr(structured_result, 'event_time', '未知時間')}")
-                                    print(f"📌 事件類型：{getattr(structured_result, 'event_type', '未知事件')}")
-                                    print(f"⚠️ 嚴重性：{getattr(structured_result, 'severity', '中')}")
                                     print(f"👤 使用者：{getattr(structured_result, 'username', '未知使用者')}")
-                                    print(f"💻 主機名稱：{getattr(structured_result, 'hostname', '未知主機')}")
-                                    print(f"🌐 主機 IP：{getattr(structured_result, 'host_ip', '未知IP')}")
-                                    print(f"\n📄 描述：")
-                                    print(f"{description}")
+                                    print(f"💻 主機：{getattr(structured_result, 'hostname', '未知主機')}")
+                                    print(f"🌐 IP：{getattr(structured_result, 'host_ip', '未知IP')}")
                                     
                                     # 建議行動
                                     actions = getattr(structured_result, 'recommended_actions', [])
                                     if actions and actions != ['查詢未執行'] and actions != ['無資料']:
-                                        print(f"\n✅ 建議行動：")
-                                        for action in actions:
-                                            print(f"- {action}")
+                                        # 合併所有建議為一行
+                                        combined_actions = "，".join(actions)
+                                        print(f"✅ 建議：{combined_actions}")
                                     
-                                    # 相關日誌摘要
+                                    # 完整日誌展開功能
                                     log_samples = getattr(structured_result, 'log_samples', [])
                                     if log_samples and log_samples != ['查詢未執行'] and log_samples != ['無資料']:
-                                        print(f"\n📑 相關日誌摘要：")
-                                        for log in log_samples:
-                                            print(f"- {log}")
+                                        print(f"\n[ 🔍 展開完整日誌 ▼ ]")
+                                        # 最多顯示3筆日誌
+                                        max_logs = min(3, len(log_samples))
+                                        for i, log in enumerate(log_samples[:max_logs]):
+                                            print(f"\n--- 日誌 {i+1}/{max_logs} ---")
+                                            formatted_log = format_log_sample(log)
+                                            print(formatted_log)
+                                        
+                                        if len(log_samples) > 3:
+                                            print(f"\n... 還有 {len(log_samples) - 3} 筆日誌 (已省略)")
                                 
-                                print(f"-" * 49)
-                                print(f"📊 總計：{total_hits} 筆記錄")
+                                print(f"\n📊 總計：{total_hits} 筆記錄")
                             else:
                                 print(f"⚠️ structured_result類型不正確或為None: {type(structured_result)}")
                                 print(f"🔍 Debug - 內容: {structured_result}")
