@@ -247,13 +247,17 @@ async def example_usage():
                         enhanced_query = f"""Execute search query in OpenSearch using available MCP tools: {time_aware_prompt}
 
                             **執行搜尋查詢：**
-                            使用者查詢: "{user_query}"
+                            原始用戶查詢（請嚴格按照此查詢執行，不要修改任何條件）: "{user_query}"
+                            
+                            【重要】請完全按照用戶的原始查詢執行，不要擅自修改任何查詢條件或關鍵字。
+                            例如：如果用戶說"status為Inactive"，請確保查詢欄位為"status"，值為"Inactive"，不要改成其他形式。
                             
                             請使用 opensearch_search_logs_advanced 工具執行搜尋：
                             - 自動判斷合適的索引模式（可搜尋多個索引）
                             - 根據使用者查詢內容構建適當的 DSL 查詢
                             - 支援搜尋任何欄位和值
                             - 請直接執行搜尋並返回實際結果，不要只提供查詢語法
+                            - 嚴格保持原始查詢條件不變
 
                             請立即調用工具並返回實際的搜尋結果。"""
                     
@@ -281,39 +285,65 @@ async def example_usage():
                     # Generate structured summary only if we got results
                     if result and len(result.strip()) > 0:
                         try:
-                            # Debug: 檢查傳入LLM的參數
-                            structured_message = f"""【重要】這是資料分析階段，請嚴格基於已有的搜尋結果進行分析，絕對不要再次執行任何工具或搜尋：
+                            # 先檢查搜尋結果是否包含實際數據
+                            has_actual_data = any(indicator in result.lower() for indicator in [
+                                'hits', 'total', '_source', 'timestamp', '_id', 'found', 'documents', 'records', 'count'
+                            ])
+                            
+                            has_error_indicators = any(error in result.lower() for error in [
+                                'error', 'failed', 'unknown key', 'parse', 'invalid', '錯誤', '失敗'
+                            ])
+                            
+                            if has_error_indicators or not has_actual_data:
+                                # 如果搜尋失敗或沒有實際數據，創建錯誤報告
+                                structured_result = SecurityEventReport(
+                                    query=user_query,
+                                    total_hits=0,
+                                    event_time="N/A",
+                                    event_type="查詢失敗",
+                                    severity="無法評估",
+                                    username="N/A",
+                                    hostname="N/A", 
+                                    host_ip="N/A",
+                                    description=f"查詢執行失敗: {result[:200]}...",
+                                    recommended_actions=["檢查 OpenSearch 服務器狀態", "驗證查詢語法", "確認網路連接"],
+                                    log_samples=["無數據 - 查詢失敗"]
+                                )
+                            else:
+                                # 只有在有實際數據時才進行LLM分析
+                                structured_message = f"""【重要】這是資料分析階段，請嚴格基於已有的搜尋結果進行分析，絕對不要再次執行任何工具或搜尋：
 
-                            原始查詢: {user_query}
-                            已完成的搜尋結果: {result}
+                                原始查詢: {user_query}
+                                已完成的搜尋結果: {result}
 
-                            **您的任務：僅進行資料分析，不執行任何工具**
-                            請基於上述搜尋結果提取以下資訊：
-                            - total_hits: 從結果中提取的實際記錄總數
-                            - event_time: 從日誌中提取的事件時間
-                            - event_type: 從日誌中提取的事件類型
-                            - severity: 基於事件內容評估嚴重性
-                            - username: 從日誌中提取的使用者名稱（如無則為"無資料"）
-                            - hostname: 從日誌中提取的主機名稱
-                            - host_ip: 從日誌中提取的IP地址（如無則為"無資料"）
-                            - description: 基於搜尋結果的簡要描述
-                            - recommended_actions: 基於分析結果的建議行動
-                            - log_samples: 從搜尋結果中提取的代表性日誌內容
+                                **您的任務：僅進行資料分析，不執行任何工具**
+                                請基於上述搜尋結果提取以下資訊：
+                                - total_hits: 從結果中提取的實際記錄總數（如果搜尋失敗則為0）
+                                - event_time: 從日誌中提取的事件時間（如無則為"N/A"）
+                                - event_type: 從日誌中提取的事件類型（如無則為"N/A"）
+                                - severity: 基於事件內容評估嚴重性（如無法評估則為"無法評估"）
+                                - username: 從日誌中提取的使用者名稱（如無則為"N/A"）
+                                - hostname: 從日誌中提取的主機名稱（如無則為"N/A"）
+                                - host_ip: 從日誌中提取的IP地址（如無則為"N/A"）
+                                - description: 基於搜尋結果的簡要描述
+                                - recommended_actions: 基於分析結果的建議行動
+                                - log_samples: 從搜尋結果中提取的代表性日誌內容（如無則為["無數據"]）
 
-                            **嚴格禁止：**
-                            - 不要執行任何 OpenSearch 工具
-                            - 不要重新搜尋任何資料
-                            - 不要編造任何資料
-                            - 只能分析已提供的搜尋結果"""
-                                                        
-                            print(f"\n🔍 Debug - 傳入LLM的message長度: {len(structured_message)}")
+                                **嚴格禁止：**
+                                - 不要執行任何 OpenSearch 工具
+                                - 不要重新搜尋任何資料
+                                - 不要編造任何資料或返回 "string" 等佔位符
+                                - 如果搜尋結果顯示錯誤，請如實反映錯誤狀態
+                                - 只能分析已提供的搜尋結果"""
+                                
+                                structured_result = await llm.generate_structured(
+                                    message=structured_message,
+                                    response_model=SecurityEventReport,
+                                )
+                                print(f"\n🔍 Debug - 傳入LLM的message長度: {len(structured_message)}")
+                            
                             print(f"🔍 Debug - response_model類型: {SecurityEventReport}")
                             print(f"🔍 Debug - 原始搜尋結果長度: {len(result)}")
-                            
-                            structured_result = await llm.generate_structured(
-                                message=structured_message,
-                                response_model=SecurityEventReport,
-                            )
                             
                             # Debug: 檢查返回的結果
                             print(f"\n🔍 Debug - structured_result類型: {type(structured_result)}")
@@ -337,15 +367,17 @@ async def example_usage():
                                 # 獲取安全狀態指示器
                                 status_indicator = get_security_status_indicator(severity, total_hits)
                                 
-                                # 檢查是否為查詢未執行的情況
-                                if total_hits == 0 and any(keyword in description for keyword in ['查詢未執行', '無資料', '無實際數據']):
-                                    print(f"\n[ ⚠️ 查詢失敗 ]")
-                                    print(f"📄 摘要：查詢未成功執行")
-                                    print(f"📋 原因：{description}")
-                                    print(f"\n💡 建議檢查：")
-                                    print(f"• OpenSearch MCP服務器是否啟動")
-                                    print(f"• 網路連接是否正常")
-                                    print(f"• 索引名稱或查詢語法是否正確")
+                                # 檢查是否為查詢失敗的情況
+                                if (total_hits == 0 and 
+                                    any(keyword in description for keyword in ['查詢失敗', '查詢執行失敗', '無資料', '無實際數據', 'unknown key', 'parse', 'error'])):
+                                    print(f"\n[ ❌ 查詢執行失敗 ]")
+                                    print(f"📄 摘要：OpenSearch 查詢處理錯誤")
+                                    print(f"📋 錯誤詳情：{description}")
+                                    print(f"\n💡 可能原因：")
+                                    print(f"• OpenSearch DSL 查詢語法錯誤")
+                                    print(f"• 索引映射配置問題")
+                                    print(f"• 查詢欄位名稱不匹配")
+                                    print(f"• OpenSearch 版本相容性問題")
                                 else:
                                     # 正常的安全報告格式
                                     print(f"\n[ {status_indicator} ]")
