@@ -47,6 +47,32 @@ def get_security_status_indicator(severity: str, total_hits: int) -> str:
         return "✅ 安全狀態"
 
 
+def extract_hit_count_from_text(text: str) -> int:
+    """從文字中提取記錄數量"""
+    import re
+    
+    # 尋找各種可能的數字表達方式
+    patterns = [
+        r'(\d+)\s*筆',  # "23筆"
+        r'(\d+)\s*條',  # "23條"
+        r'(\d+)\s*個',  # "23個"
+        r'(\d+)\s*筆符合',  # "23筆符合"
+        r'共有\s*(\d+)',  # "共有23"
+        r'找到了?\s*(\d+)',  # "找到23" 或 "找到了23"
+        r'(\d+)\s*(?:筆|條|個).*?符合',  # "23筆符合條件"
+        r'(?:結果|記錄|日誌).*?(\d+)',  # "結果顯示23"
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            try:
+                return int(matches[0])
+            except ValueError:
+                continue
+    
+    return 0
+
 def format_log_sample(log_sample: str, max_lines: int = 10) -> str:
     """格式化日誌樣本，限制顯示行數"""
     try:
@@ -143,7 +169,7 @@ async def example_usage():
         context = agent_app.context
 
         logger.info("Current config:", data=context.config.model_dump())
-
+ ## prompt限制LLM只能是查詢助手。LLM一開始就不是資安專家?
         opensearch_agent = Agent(
             name="opensearch_searcher",
             instruction="""You are an OpenSearch query agent with access to search capabilities. Please respond in Traditional Chinese (繁體中文).
@@ -178,14 +204,33 @@ async def example_usage():
             不需要詢問當前時間。使用 "now" 相對時間表達式。""",
             server_names=["opensearch"],
         )
-
+        # initialize agent，理論上會先完成tool/list與連接LLM的功能。但先執行了print跟input
         async with opensearch_agent:
+            print(f"[{time.time()}] 開始初始化")
             logger.info("opensearch_searcher: Connected to server, calling list_tools...")
+            print(f"[{time.time()}] 呼叫 list_tools 前")
             result = await opensearch_agent.list_tools()
-            logger.info("Tools available:", data=result.model_dump())
+            print(f"[{time.time()}] list_tools 完成")
+            print(f"Tools available: {len(result.tools)} 個工具")
+            for i, tool in enumerate(result.tools, 1):
+                print(f"  {i}. {tool.name}: {tool.description}")
+            print(f"[{time.time()}] 初始化完成")
 
             llm = await opensearch_agent.attach_llm(GoogleAugmentedLLM)
             time_parser = TimeParser()
+              # ===== 新增：強制初始化確認 =====
+            logger.info("Agent initialization completed, tools and LLM ready")
+            print("\\n🔧 正在初始化Agent和LLM連接...")
+
+            # 測試連接是否正常
+            try:
+                test_tools = await opensearch_agent.list_tools()
+                print(f"✅ 成功載入 {len(test_tools.tools)} 個工具")
+                print("✅ LLM 連接就緒")
+            except Exception as e:
+                print(f"❌ 初始化失敗: {e}")
+                return
+            # ===== 新增結束 =====
 
             # Interactive search loop
             print("\n=== OpenSearch 資安事件分析系統 已啟動 ===")
@@ -211,6 +256,9 @@ async def example_usage():
                         continue
                     
                     print(f"\n⏳ 正在執行搜尋: {user_query}")
+                    
+                    # 每次查詢都使用新的LLM實例，徹底避免記憶干擾
+                    fresh_llm = await opensearch_agent.attach_llm(GoogleAugmentedLLM)
                     
                     # 檢查是否為絕對時間區間查詢
                     if '到' in user_query or ' to ' in user_query.lower():
@@ -262,7 +310,7 @@ async def example_usage():
                             請立即調用工具並返回實際的搜尋結果。"""
                     
                     # Execute search query
-                    result = await llm.generate_str(message=enhanced_query)
+                    result = await fresh_llm.generate_str(message=enhanced_query)
                     logger.info(f"Search result for '{user_query}': {result}")
                     print(f"\n📊 搜尋結果:\n{result}")
                     
@@ -311,36 +359,39 @@ async def example_usage():
                                 )
                             else:
                                 # 只有在有實際數據時才進行LLM分析
-                                structured_message = f"""【重要】這是資料分析階段，請嚴格基於已有的搜尋結果進行分析，絕對不要再次執行任何工具或搜尋：
+                                structured_message = f"""分析以下OpenSearch搜尋結果並提取結構化資訊：
 
-                                原始查詢: {user_query}
-                                已完成的搜尋結果: {result}
+                                    原始查詢: {user_query}
+                                    搜尋結果: {result}
 
-                                **您的任務：僅進行資料分析，不執行任何工具**
-                                請基於上述搜尋結果提取以下資訊：
-                                - total_hits: 從結果中提取的實際記錄總數（如果搜尋失敗則為0）
-                                - event_time: 從日誌中提取的事件時間（如無則為"N/A"）
-                                - event_type: 從日誌中提取的事件類型（如無則為"N/A"）
-                                - severity: 基於事件內容評估嚴重性（如無法評估則為"無法評估"）
-                                - username: 從日誌中提取的使用者名稱（如無則為"N/A"）
-                                - hostname: 從日誌中提取的主機名稱（如無則為"N/A"）
-                                - host_ip: 從日誌中提取的IP地址（如無則為"N/A"）
-                                - description: 基於搜尋結果的簡要描述
-                                - recommended_actions: 基於分析結果的建議行動
-                                - log_samples: 從搜尋結果中提取的代表性日誌內容（如無則為["無數據"]）
+                                    請分析上述結果並提取：
+                                    1. total_hits: 實際找到的記錄數量
+                                    2. event_time: 事件發生時間（從@timestamp提取）
+                                    3. event_type: 事件類型（從event.type提取）
+                                    4. severity: 嚴重程度（低/中/高，根據事件內容判斷）
+                                    5. username: 使用者名稱（如有）
+                                    6. hostname: 主機名稱（從host.name提取）
+                                    7. host_ip: IP地址（如有）
+                                    8. description: 事件摘要描述
+                                    9. recommended_actions: 建議的處理行動
+                                    10. log_samples: 代表性的日誌內容
 
-                                **嚴格禁止：**
-                                - 不要執行任何 OpenSearch 工具
-                                - 不要重新搜尋任何資料
-                                - 不要編造任何資料或返回 "string" 等佔位符
-                                - 如果搜尋結果顯示錯誤，請如實反映錯誤狀態
-                                - 只能分析已提供的搜尋結果"""
-                                
-                                structured_result = await llm.generate_structured(
+                                    注意：
+                                    - 如果搜尋失敗或無數據，total_hits設為0
+                                    - 無法取得的欄位使用預設值（N/A或未知）
+                                    - 只分析提供的資料，不要執行額外搜尋"""
+                                                                    
+                                # 使用同一個fresh_llm實例進行結構化分析
+                                structured_result = await fresh_llm.generate_structured(
                                     message=structured_message,
                                     response_model=SecurityEventReport,
                                 )
-                                print(f"\n🔍 Debug - 傳入LLM的message長度: {len(structured_message)}")
+                                # 診斷用：檢查搜尋結果中的實際數量
+                                detected_hits = extract_hit_count_from_text(result)
+                                print(f"\n🔍 Debug - 從搜尋結果中提取到的記錄數: {detected_hits}")
+                                print(f"🔍 Debug - structured_result.total_hits: {getattr(structured_result, 'total_hits', 'NO_ATTR')}")
+                                print(f"🔍 Debug - 數量是否匹配: {detected_hits > 0 and getattr(structured_result, 'total_hits', 0) > 0}")
+                                print(f"🔍 Debug - 傳入LLM的message長度: {len(structured_message)}")
                             
                             print(f"🔍 Debug - response_model類型: {SecurityEventReport}")
                             print(f"🔍 Debug - 原始搜尋結果長度: {len(result)}")
