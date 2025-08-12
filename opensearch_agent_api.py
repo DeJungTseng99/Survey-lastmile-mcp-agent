@@ -184,6 +184,7 @@ async def lifespan(app: FastAPI):
             以表格顯示查詢結果的事件資料，包括但不限於以下欄位：  
             `_index`、`_id`、`event.code`、`host.name`、`event_data.subject_domain_name`、`process.name`、`subject_user_name`、`@timestamp`。  
             若包含特定資安資訊（如使用者帳號、IP 位址、存取物件名稱），也一併列入。
+            若查詢結果中有多筆紀錄，請預設顯示時間最近的前三筆資料。
 
             ## 🧠 **解釋**：  
             說明這次查詢對資安分析的價值，例如：行為是否異常、可能攻擊階段、是否符合威脅指標。
@@ -272,7 +273,7 @@ app = FastAPI(
 # 設定 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Next.js 預設端口
+    allow_origins=["*"],  # 測試階段允許所有來源
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
