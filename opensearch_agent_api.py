@@ -58,17 +58,8 @@ class SearchResponse(BaseModel):
 
 
 def get_security_status_indicator(severity: str, total_hits: int) -> str:
-    """根據嚴重程度和記錄數量返回安全狀態指示器"""
-    severity_lower = severity.lower()
-    
-    if severity_lower == "高" or total_hits > 100:
-        return "🔴 高風險警示"
-    elif severity_lower == "中" or total_hits > 10:
-        return "🟡 中度警示"
-    elif severity_lower == "低" or total_hits > 0:
-        return "🟠 低度警示"
-    else:
-        return "✅ 安全狀態"
+    # 不回傳任何額外警示標籤與後綴，改交由 LLM 輸出即可
+    return ""
 
 
 def extract_hit_count_from_text(text: str) -> int:
@@ -178,11 +169,35 @@ async def lifespan(app: FastAPI):
             1. **優先考慮資安風險**：針對異常偵測、攻擊行為比單純搜尋更重要
             2. **說明原因**：每個查詢或答案都應解釋其安全價值與用途
             3. **語法精確**：所有查詢必須符合 OpenSearch DSL 規範
-            4. **輸出需有多層次內容**：
-            - **威脅場景**：說明這個查詢在偵測什麼攻擊或異常行為
-            - **查詢語法**：提供正確的 DSL JSON
-            - **解釋**：為何要做這個查詢，對資安意義為何
-            - **下一步行動**：工程師該如何處理或後續分析
+            4. **輸出需有多層次內容，請統一整合為以下格式：**
+            ---
+            
+            請遵循以下格式進行每次查詢結果的呈現：
+
+            ## **威脅場景**：  
+            簡要描述本次查詢的目標與安全背景，例如可疑活動、特定主機、登錄機碼異常等。  
+            若查詢結果中出現高風險行為（如存取關鍵登錄機碼），請將其摘要整合在此段開頭說明。  
+            查詢結尾請附上 **「總計 X 筆紀錄」** 以顯示查詢結果數量。
+
+
+            ## 📋 **事件表格**：  
+            以表格顯示查詢結果的事件資料，包括但不限於以下欄位：  
+            `_index`、`_id`、`event.code`、`host.name`、`event_data.subject_domain_name`、`process.name`、`subject_user_name`、`@timestamp`。  
+            若包含特定資安資訊（如使用者帳號、IP 位址、存取物件名稱），也一併列入。
+
+            ## 🧠 **解釋**：  
+            說明這次查詢對資安分析的價值，例如：行為是否異常、可能攻擊階段、是否符合威脅指標。
+
+            ## 🛠️ **下一步行動**：  
+            提供實際建議，可包括：
+            - 檢查是否為預期行為（若非預期，可能代表惡意活動）
+            - 檢視程序名稱或事件代碼是否異常
+            - 關聯其他日誌資料以釐清攻擊路徑
+            - 根據行為設定自動告警或加入阻擋名單
+
+            輸出的資安報告到這裡結束。
+
+            ---
 
             ### 能力：
             - 能產生 JSON 格式的 DSL 查詢，例如：
@@ -211,12 +226,6 @@ async def lifespan(app: FastAPI):
             - 今天：使用 "now/d" 到 "now"
             - 昨天：使用 "now-1d/d" 到 "now-1d/d+1d"
 
-            ### 輸出格式：
-            每次查詢回覆請採以下格式：
-            **[威脅場景]**：說明偵測目標
-            以表格呈現相關事件的原始資料
-            **解釋**：資安意義說明
-            **下一步行動**：建議的處理步驟
 
             重要：必須實際使用可用的 OpenSearch MCP 工具執行查詢，不要只提供語法。""",
                         server_names=["opensearch"],
@@ -416,22 +425,17 @@ async def process_search_query(user_query: str) -> tuple[str, Optional[SecurityE
 
 
 def format_search_result(result: str, structured_report: Optional[SecurityEventReport]) -> str:
-    """格式化搜尋結果為顯示格式"""
+    """格式化搜尋結果為顯示格式（不附加後綴警示）"""
     if not structured_report:
         return result
-    
-    # 基本資訊
+
     total_hits = getattr(structured_report, 'total_hits', 0)
-    severity = getattr(structured_report, 'severity', '中')
-    description = getattr(structured_report, 'description', '無描述')
+    description = getattr(structured_report, 'description', '')
     
-    # 獲取安全狀態指示器
-    status_indicator = get_security_status_indicator(severity, total_hits)
-    
-    # 檢查是否為查詢失敗的情況
+    # 查詢失敗的情況：保留錯誤資訊
     if (total_hits == 0 and 
         any(keyword in description for keyword in ['查詢失敗', '查詢執行失敗', '無資料', '無實際數據', 'unknown key', 'parse', 'error'])):
-        formatted_result = f"""📊 搜尋結果:
+        return f"""📊 搜尋結果:
 {result}
 
 [ ❌ 查詢執行失敗 ]
@@ -443,37 +447,10 @@ def format_search_result(result: str, structured_report: Optional[SecurityEventR
 • 索引映射配置問題
 • 查詢欄位名稱不匹配
 • OpenSearch 版本相容性問題"""
-    else:
-        # 正常的安全報告格式
-        formatted_result = f"""📊 搜尋結果:
-{result}
 
-[ {status_indicator} ]
-📄 摘要：{description}
-🕒 時間：{getattr(structured_report, 'event_time', '未知時間')}
-👤 使用者：{getattr(structured_report, 'username', '未知使用者')}
-💻 主機：{getattr(structured_report, 'hostname', '未知主機')}
-🌐 IP：{getattr(structured_report, 'host_ip', '未知IP')}"""
-        
-        # 建議行動
-        actions = getattr(structured_report, 'recommended_actions', [])
-        if actions and actions != ['查詢未執行'] and actions != ['無資料']:
-            combined_actions = "，".join(actions)
-            formatted_result += f"\n✅ 建議：{combined_actions}"
-        
-        # 完整日誌展開功能
-        log_samples = getattr(structured_report, 'log_samples', [])
-        if log_samples and log_samples != ['查詢未執行'] and log_samples != ['無資料']:
-            formatted_result += f"\n\n[ 🔍 展開完整日誌 ▼ ]"
-            max_logs = min(3, len(log_samples))
-            for i, log in enumerate(log_samples[:max_logs]):
-                formatted_result += f"\n\n--- 日誌 {i+1}/{max_logs} ---\n{format_log_sample(log)}"
-            
-            if len(log_samples) > 3:
-                formatted_result += f"\n\n... 還有 {len(log_samples) - 3} 筆日誌 (已省略)"
-    
-    formatted_result += f"\n\n📊 總計：{total_hits} 筆記錄"
-    return formatted_result
+    # ✅ 正常回報時，**直接回傳 LLM 結果即可**，不做後綴拼接
+    return result
+
 
 
 # ===== API 端點 =====
