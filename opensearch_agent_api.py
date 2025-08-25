@@ -320,17 +320,12 @@ async def process_search_query(user_query: str) -> tuple[str, Optional[SecurityE
                     原始查詢: {user_query}
                     時間範圍: {{'range': {{'@timestamp': {{'gte': '{time_range['gte']}', 'lte': '{time_range['lte']}'}}}}}}
                     
-                    重要：請實際使用opensearch_search_logs_advanced工具來執行此DSL查詢，不要只回應查詢語法。"""
+                    請嚴格按照此查詢執行，不要修改任何條件。"""
                 else:
                     print("⚠️ 時間格式無法解析，將使用原始查詢")
                     enhanced_query = f"""Execute search query in OpenSearch using available MCP tools: {user_query}
 
-                        重要：請實際使用以下其中一個OpenSearch MCP工具來執行搜尋：
-                        1. opensearch_search_logs_by_keyword - 用於關鍵字搜尋  
-                        2. opensearch_search_logs_advanced - 用於複雜的DSL查詢
-                        3. opensearch_list_log_indices - 列出可用的索引
-
-                        不要只回應查詢語法，請實際調用工具並返回搜尋結果。"""
+"""
             else:
                 enhanced_query = f"Execute search query in OpenSearch: {user_query}"
         else:
@@ -344,14 +339,7 @@ async def process_search_query(user_query: str) -> tuple[str, Optional[SecurityE
                 【重要】請完全按照用戶的原始查詢執行，不要擅自修改任何查詢條件或關鍵字。
                 例如：如果用戶說"status為Inactive"，請確保查詢欄位為"status"，值為"Inactive"，不要改成其他形式。
                 
-                請使用 opensearch_search_logs_advanced 工具執行搜尋：
-                - 自動判斷合適的索引模式（可搜尋多個索引）
-                - 根據使用者查詢內容構建適當的 DSL 查詢
-                - 支援搜尋任何欄位和值
-                - 請直接執行搜尋並返回實際結果，不要只提供查詢語法
-                - 嚴格保持原始查詢條件不變
-
-                請立即調用工具並返回實際的搜尋結果。"""
+                """
         
         # 執行搜尋查詢
         result = await fresh_llm.generate_str(message=enhanced_query)
